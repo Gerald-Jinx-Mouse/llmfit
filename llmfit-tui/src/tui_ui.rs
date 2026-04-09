@@ -12,7 +12,7 @@ use ratatui::{
 use crate::theme::ThemeColors;
 use crate::tui_app::{
     App, AvailabilityFilter, DL_DOCKER, DL_LLAMACPP, DL_LMSTUDIO, DL_OLLAMA, DownloadCapability,
-    DownloadProvider, FitFilter, InputMode, PlanField,
+    DownloadProvider, FitFilter, InputMode, PlanField, SimulationField,
 };
 use llmfit_core::fit::{FitLevel, ModelFit, SortColumn};
 use llmfit_core::hardware::is_running_in_wsl;
@@ -75,6 +75,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         draw_runtime_popup(frame, app, &tc);
     } else if app.input_mode == InputMode::HelpPopup {
         draw_help_popup(frame, app, &tc);
+    } else if app.input_mode == InputMode::Simulation {
+        draw_simulation_popup(frame, app, &tc);
     }
 }
 
@@ -183,7 +185,14 @@ fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
         tc.muted
     };
 
-    let hardware_line = Line::from(vec![
+    let mut hw_spans = Vec::new();
+    if app.sim_active {
+        hw_spans.push(Span::styled(
+            " SIM ",
+            Style::default().fg(tc.bg).bg(tc.warning).bold(),
+        ));
+    }
+    hw_spans.extend([
         Span::styled(" CPU: ", Style::default().fg(tc.muted)),
         Span::styled(
             format!(
@@ -206,6 +215,7 @@ fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
         Span::styled("  │  ", Style::default().fg(tc.muted)),
         Span::styled(gpu_info, Style::default().fg(tc.accent_secondary)),
     ]);
+    let hardware_line = Line::from(hw_spans);
 
     let mut provider_spans = vec![
         Span::styled(" ", Style::default()),
@@ -282,7 +292,8 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
         | InputMode::ParamsBucketPopup
         | InputMode::LicensePopup
         | InputMode::RuntimePopup
-        | InputMode::HelpPopup => Style::default().fg(tc.muted),
+        | InputMode::HelpPopup
+        | InputMode::Simulation => Style::default().fg(tc.muted),
     };
 
     let search_text = if app.search_query.is_empty() && app.input_mode == InputMode::Normal {
@@ -2480,10 +2491,14 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
             };
             (
                 format!(
-                    " ↑↓/jk:nav  {}  /:search  f:fit  s:sort{}  P:providers  U:use cases  C:caps  L:licenses  R:runtime  h:help  q:quit",
+                    " S:simulate  h:help  ↑↓:nav  {}  /:search  f:fit  s:sort{}  P:providers  U:use cases  C:caps  R:runtime  q:quit",
                     detail_key, ollama_keys,
                 ),
-                "NORMAL".to_string(),
+                if app.sim_active {
+                    "NORMAL [SIM]".to_string()
+                } else {
+                    "NORMAL".to_string()
+                },
             )
         }
         InputMode::Visual => {
@@ -2555,6 +2570,10 @@ fn status_keys_and_mode(app: &App) -> (String, String) {
         InputMode::HelpPopup => (
             "  ↑↓/jk:scroll  Esc/h/q:close".to_string(),
             "HELP".to_string(),
+        ),
+        InputMode::Simulation => (
+            "  Tab/jk:field  type:edit  Enter:apply  Ctrl-R:reset  Esc:close".to_string(),
+            "SIMULATION".to_string(),
         ),
     }
 }
@@ -2909,6 +2928,7 @@ fn draw_help_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
         ("  t", "Cycle theme"),
         ("", ""),
         ("Actions", ""),
+        ("  S", "Hardware simulation"),
         ("  d", "Download/pull model"),
         ("  r", "Refresh installed models"),
         ("  p", "Plan mode"),
@@ -3121,4 +3141,117 @@ fn draw_license_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
 
     let paragraph = Paragraph::new(lines).block(block);
     frame.render_widget(paragraph, popup_area);
+}
+
+fn draw_simulation_popup(frame: &mut Frame, app: &App, tc: &ThemeColors) {
+    let area = frame.area();
+
+    let popup_width = 48u16.min(area.width.saturating_sub(4));
+    let popup_height = 14u16.min(area.height.saturating_sub(4));
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(tc.accent_secondary))
+        .style(Style::default().bg(tc.bg))
+        .title(" Hardware Simulation ")
+        .title_style(
+            Style::default()
+                .fg(tc.accent_secondary)
+                .add_modifier(Modifier::BOLD),
+        );
+
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    let fields = [
+        ("  RAM (GB):", &app.sim_ram_input, SimulationField::Ram),
+        ("  VRAM (GB):", &app.sim_vram_input, SimulationField::Vram),
+        ("  CPU Cores:", &app.sim_cpu_input, SimulationField::CpuCores),
+    ];
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(""));
+
+    for (label, value, field) in &fields {
+        let is_active = app.sim_field == *field;
+        let label_style = if is_active {
+            Style::default().fg(tc.accent).bold()
+        } else {
+            Style::default().fg(tc.fg)
+        };
+        let value_style = if is_active {
+            Style::default().fg(tc.fg).bg(tc.highlight_bg)
+        } else {
+            Style::default().fg(tc.fg)
+        };
+
+        let display_val = if value.is_empty() && is_active {
+            "_".to_string()
+        } else {
+            format!("{:<16}", value)
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(format!("{:<14}", label), label_style),
+            Span::styled(display_val, value_style),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+
+    // Show real hardware for reference
+    let real_vram = app
+        .real_specs
+        .gpu_vram_gb
+        .map(|v| format!("{:.1}", v))
+        .unwrap_or_else(|| "none".to_string());
+    lines.push(Line::from(Span::styled(
+        format!(
+            "  Real: {:.1} GB RAM, {} GB VRAM, {} cores",
+            app.real_specs.total_ram_gb,
+            real_vram,
+            app.real_specs.total_cpu_cores,
+        ),
+        Style::default().fg(tc.muted),
+    )));
+
+    if app.specs.unified_memory {
+        lines.push(Line::from(Span::styled(
+            "  (unified memory: RAM also affects VRAM)",
+            Style::default().fg(tc.muted),
+        )));
+    }
+
+    if app.sim_active {
+        lines.push(Line::from(Span::styled(
+            "  Currently simulating",
+            Style::default().fg(tc.warning),
+        )));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Enter:apply  Ctrl-R:reset  Esc:close",
+        Style::default().fg(tc.muted),
+    )));
+
+    let paragraph = Paragraph::new(lines);
+    frame.render_widget(paragraph, inner);
+
+    // Draw cursor in the active field
+    let field_row = match app.sim_field {
+        SimulationField::Ram => 1,
+        SimulationField::Vram => 2,
+        SimulationField::CpuCores => 3,
+    };
+    let cursor_x = inner.x + 14 + app.sim_cursor_position as u16;
+    let cursor_y = inner.y + field_row;
+    if cursor_x < inner.x + inner.width {
+        frame.set_cursor_position((cursor_x, cursor_y));
+    }
 }
