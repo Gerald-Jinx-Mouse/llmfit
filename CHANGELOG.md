@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.8](https://github.com/AlexsJones/llmfit/compare/v0.9.7...v0.9.8) (2026-04-13)
+
+
+### Bug Fixes
+
+* **ci:** use RELEASE_TOKEN in release-please to trigger downstream workflows ([f216779](https://github.com/AlexsJones/llmfit/commit/f21677927b9d05a348a6ed33da6faaf832f9d82c))
+
 ## [0.9.7](https://github.com/AlexsJones/llmfit/compare/v0.9.6...v0.9.7) (2026-04-13)
 
 
